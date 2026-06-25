@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>當沖計算機 Pro</title>
-    <!-- 引入 React 和 Babel -->
+    <!-- 引入 React 和 Babel (鎖定穩定版本以避免最新版的 automatic runtime 產生 import 錯誤) -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.23.8/babel.min.js"></script>
     <!-- 引入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
@@ -23,7 +23,11 @@
 
 <div id="root"></div>
 
-<script type="text/babel">
+<!-- 強制設定 presets 確保 Babel 正確解析 React -->
+<script type="text/babel" data-presets="react">
+    /** @jsx React.createElement */
+    /** @jsxFrag React.Fragment */
+    
     const { useState, useMemo } = React;
 
     // Icon components
@@ -32,24 +36,23 @@
         ArrowDown: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>,
         Plus: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>,
         Minus: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/></svg>,
-        Refresh: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>,
         MoreUp: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>,
         MoreDown: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
     };
 
     const App = () => {
-        // --- State ---
+        // --- State (統一使用字串來管理，避免小數點輸入 Bug 及前面有0的問題) ---
         const [tradeType, setTradeType] = useState('long'); // 'long' or 'short'
-        const [feeDiscount, setFeeDiscount] = useState(2.8);
+        const [feeDiscountStr, setFeeDiscountStr] = useState('2.8');
         const [isDayTradeTax, setIsDayTradeTax] = useState(true);
-        const [minFee, setMinFee] = useState(20);
+        const [minFeeStr, setMinFeeStr] = useState('20');
         
-        const [entryPrice, setEntryPrice] = useState(100); 
-        const [sheets, setSheets] = useState(1); // 張數
+        const [entryPriceStr, setEntryPriceStr] = useState('100'); 
+        const [sheetsStr, setSheetsStr] = useState('1'); 
 
         // Range State for Table
-        const [rangeTop, setRangeTop] = useState(5);    // 上方預設顯示 +5 檔
-        const [rangeBottom, setRangeBottom] = useState(-5); // 下方預設顯示 -5 檔
+        const [rangeTop, setRangeTop] = useState(5);    
+        const [rangeBottom, setRangeBottom] = useState(-5); 
 
         // --- Constants ---
         const FEE_RATE = 0.001425; 
@@ -57,9 +60,26 @@
         const TAX_RATE_DAY = 0.0015;
 
         // --- Helpers ---
+        // 安全轉換數字
+        const safeEntry = parseFloat(entryPriceStr) || 0;
+        const safeSheets = parseInt(sheetsStr, 10) || 0;
+        const safeDiscount = parseFloat(feeDiscountStr) || 0;
+        const safeMinFee = parseInt(minFeeStr, 10) || 0;
+        
         const currentTaxRate = isDayTradeTax ? TAX_RATE_DAY : TAX_RATE_NORMAL;
         const formatMoney = (val) => new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(val);
         const formatPercent = (val) => new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val) + '%';
+
+        // 處理輸入，防呆與防前面多個 0
+        const handleInputChange = (setter) => (e) => {
+            let val = e.target.value;
+            // 過濾開頭的零 (例如 0112 變成 112，但 0.5 保持 0.5)
+            if (val.length > 1 && val.startsWith('0') && val.indexOf('.') !== 1) {
+                val = val.replace(/^0+/, '');
+                if (val === '') val = '0';
+            }
+            setter(val);
+        };
 
         const getTickSize = (price) => {
             if (price < 10) return 0.01;
@@ -71,17 +91,13 @@
         };
 
         const addTicks = (price, ticks) => {
-            let currentP = Number(price); // 強制轉為數字，避免空字串錯誤
+            let currentP = price;
             const direction = ticks > 0 ? 1 : -1;
             let count = Math.abs(ticks);
             
-            // 簡單保護機制，避免無窮迴圈或過度計算
             let safety = 0;
             while (count > 0 && safety < 1000) {
-                const tickSize = getTickSize(currentP);
-                let step = tickSize;
-                
-                // 處理向下跨級距的邊界問題
+                let step = getTickSize(currentP);
                 if (direction < 0) {
                     if (currentP === 1000) step = 1;
                     else if (currentP === 500) step = 0.5;
@@ -91,8 +107,7 @@
                 }
                 
                 currentP += step * direction;
-                // 浮點數修正
-                currentP = Math.round(currentP * 100) / 100;
+                currentP = Math.round(currentP * 100) / 100; // 浮點數修正
                 
                 if (currentP <= 0) break;
                 
@@ -103,7 +118,7 @@
         };
 
         const calculateResult = (entry, exit, vol, type) => {
-            if (!entry || !exit) return { netProfit: 0, roi: 0 };
+            if (!entry || !exit || !vol) return { netProfit: 0, roi: 0 };
             
             let buyPrice = type === 'long' ? entry : exit;
             let sellPrice = type === 'long' ? exit : entry;
@@ -111,11 +126,11 @@
             const buyCost = Math.floor(buyPrice * vol);
             const sellRevenue = Math.floor(sellPrice * vol);
 
-            let bFee = Math.floor(buyCost * FEE_RATE * (feeDiscount / 10));
-            if (bFee < minFee) bFee = minFee;
+            let bFee = Math.floor(buyCost * FEE_RATE * (safeDiscount / 10));
+            if (bFee < safeMinFee) bFee = safeMinFee;
 
-            let sFee = Math.floor(sellRevenue * FEE_RATE * (feeDiscount / 10));
-            if (sFee < minFee) sFee = minFee;
+            let sFee = Math.floor(sellRevenue * FEE_RATE * (safeDiscount / 10));
+            if (sFee < safeMinFee) sFee = safeMinFee;
 
             const tax = Math.floor(sellRevenue * currentTaxRate);
             
@@ -123,7 +138,6 @@
             const finalBuyPay = buyCost + bFee; 
             const netProfit = finalSellPocket - finalBuyPay;
             
-            // 投資成本 (計算 ROI 用)
             const investmentCost = (entry * vol) + (type === 'long' ? bFee : (sFee + tax));
             const roi = investmentCost > 0 ? (netProfit / investmentCost) * 100 : 0;
 
@@ -131,32 +145,31 @@
         };
 
         const calculateBreakEven = () => {
-            let tempExit = entryPrice;
+            if (!safeEntry || !safeSheets) return '-';
+            let tempExit = safeEntry;
             const direction = tradeType === 'long' ? 1 : -1;
-            // 往獲利方向找 200 檔
             for(let i=0; i<200; i++) {
-                const res = calculateResult(entryPrice, tempExit, sheets * 1000, tradeType);
+                const res = calculateResult(safeEntry, tempExit, safeSheets * 1000, tradeType);
                 if (res.netProfit >= 0) return tempExit;
                 tempExit = addTicks(tempExit, 1 * direction);
             }
-            return entryPrice;
+            return safeEntry;
         };
 
         // --- Memos ---
-        const breakEvenPrice = useMemo(() => calculateBreakEven(), [entryPrice, sheets, tradeType, feeDiscount, isDayTradeTax, minFee]);
+        const breakEvenPrice = useMemo(() => calculateBreakEven(), [safeEntry, safeSheets, tradeType, safeDiscount, isDayTradeTax, safeMinFee]);
 
         const simulationTable = useMemo(() => {
+            if (!safeEntry || !safeSheets) return [];
+            
             const rows = [];
-            // 從上方 rangeTop 到下方 rangeBottom
             for (let i = rangeTop; i >= rangeBottom; i--) {
                 const direction = tradeType === 'long' ? 1 : -1;
-                
-                // 這裡的 i 是「獲利檔位」，正數代表賺的方向，負數代表賠的方向
-                let p = addTicks(entryPrice, i * direction);
+                let p = addTicks(safeEntry, i * direction);
                 
                 if (p <= 0) continue;
                 
-                const res = calculateResult(entryPrice, p, sheets * 1000, tradeType);
+                const res = calculateResult(safeEntry, p, safeSheets * 1000, tradeType);
                 rows.push({
                     price: p,
                     diffTick: i,
@@ -164,7 +177,7 @@
                 });
             }
             return rows;
-        }, [entryPrice, sheets, tradeType, feeDiscount, isDayTradeTax, minFee, rangeTop, rangeBottom]);
+        }, [safeEntry, safeSheets, tradeType, safeDiscount, isDayTradeTax, safeMinFee, rangeTop, rangeBottom]);
 
         const isLong = tradeType === 'long';
         
@@ -185,7 +198,7 @@
         const handleExpandBottom = () => setRangeBottom(prev => prev - 5);
 
         return (
-            <div className="min-h-screen pb-20 max-w-lg mx-auto bg-gray-50 shadow-2xl overflow-hidden min-h-screen border-x border-gray-200">
+            <div className="min-h-screen pb-20 max-w-lg mx-auto bg-gray-50 shadow-2xl overflow-hidden border-x border-gray-200">
                 
                 {/* Header Area */}
                 <div className="bg-white p-4 shadow-sm sticky top-0 z-10">
@@ -208,8 +221,9 @@
                             <label className={`text-xs font-bold block mb-1 ${isLong ? 'text-red-700' : 'text-green-700'}`}>成本價</label>
                             <input 
                                 type="number" step="0.1" inputMode="decimal"
-                                value={entryPrice} 
-                                onChange={(e) => setEntryPrice(e.target.value === '' ? '' : Number(e.target.value))} 
+                                value={entryPriceStr} 
+                                onChange={handleInputChange(setEntryPriceStr)} 
+                                placeholder="請輸入"
                                 className={`w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-2xl font-mono font-bold outline-none focus:ring-2 ${isLong ? 'focus:ring-red-200' : 'focus:ring-green-200'}`}
                             />
                         </div>
@@ -218,13 +232,13 @@
                             <div className="relative">
                                 <input 
                                     type="number" step="1" inputMode="numeric"
-                                    value={sheets} 
-                                    onChange={(e) => setSheets(e.target.value === '' ? '' : Number(e.target.value))} 
+                                    value={sheetsStr} 
+                                    onChange={handleInputChange(setSheetsStr)} 
                                     className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xl font-mono text-center outline-none focus:ring-2 focus:ring-blue-100"
                                 />
                                 <div className="absolute right-0 top-0 h-full flex flex-col border-l border-gray-200">
-                                    <button onClick={() => setSheets(s => (s === '' ? 1 : s+1))} className="flex-1 px-1.5 hover:bg-gray-200 text-gray-500"><Icons.Plus /></button>
-                                    <button onClick={() => setSheets(s => (s === '' ? 0 : Math.max(1, s-1)))} className="flex-1 px-1.5 hover:bg-gray-200 text-gray-500"><Icons.Minus /></button>
+                                    <button onClick={() => setSheetsStr(String(safeSheets + 1))} className="flex-1 px-1.5 hover:bg-gray-200 text-gray-500"><Icons.Plus /></button>
+                                    <button onClick={() => setSheetsStr(String(Math.max(1, safeSheets - 1)))} className="flex-1 px-1.5 hover:bg-gray-200 text-gray-500"><Icons.Minus /></button>
                                 </div>
                             </div>
                         </div>
@@ -235,7 +249,7 @@
                 <div className="px-4 py-2 grid grid-cols-12 gap-2 text-xs text-gray-500 bg-white border-b border-gray-100">
                     <div className="col-span-4 flex items-center gap-1 bg-gray-50 px-2 py-1 rounded">
                         <span>折數</span>
-                        <input type="number" step="0.1" value={feeDiscount} onChange={e => setFeeDiscount(Number(e.target.value))} className="w-full bg-transparent text-center font-bold text-gray-700 outline-none" />
+                        <input type="number" step="0.1" value={feeDiscountStr} onChange={handleInputChange(setFeeDiscountStr)} className="w-full bg-transparent text-center font-bold text-gray-700 outline-none" />
                     </div>
                     <div className="col-span-4 flex items-center justify-center gap-1 bg-gray-50 px-2 py-1 rounded">
                         <input type="checkbox" checked={isDayTradeTax} onChange={() => setIsDayTradeTax(!isDayTradeTax)} id="tax" className="accent-blue-600" />
@@ -275,8 +289,10 @@
                         </div>
                         
                         <div className="divide-y divide-gray-100">
-                            {simulationTable.map((row) => (
-                                <div key={row.price} className={`grid grid-cols-4 py-2.5 px-4 items-center transition-colors ${row.price === entryPrice ? 'bg-blue-50 ring-1 ring-blue-100 z-10 relative' : getProfitBg(row.netProfit)} ${row.price === breakEvenPrice && row.price !== entryPrice ? 'bg-yellow-50' : ''}`}>
+                            {simulationTable.length === 0 ? (
+                                <div className="py-8 text-center text-gray-400 text-sm">請輸入有效數值以查看試算表</div>
+                            ) : simulationTable.map((row) => (
+                                <div key={row.price} className={`grid grid-cols-4 py-2.5 px-4 items-center transition-colors ${row.price === safeEntry ? 'bg-blue-50 ring-1 ring-blue-100 z-10 relative' : getProfitBg(row.netProfit)} ${row.price === breakEvenPrice && row.price !== safeEntry ? 'bg-yellow-50' : ''}`}>
                                     
                                     {/* Column 1: Tick Label */}
                                     <div className="text-left">
@@ -329,7 +345,7 @@
                 </div>
 
                 <div className="text-center text-[10px] text-gray-300 py-4 bg-gray-50">
-                    當沖計算機 Pro v2.3
+                    當沖計算機 Pro v2.4.1 (修正環境編譯錯誤)
                 </div>
 
             </div>
