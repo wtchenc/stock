@@ -43,6 +43,7 @@
     const App = () => {
         // --- State (統一使用字串來管理，避免小數點輸入 Bug 及前面有0的問題) ---
         const [tradeType, setTradeType] = useState('long'); // 'long' or 'short'
+        const [assetType, setAssetType] = useState('stock'); // 'stock' (一般股) or 'etf' (ETF)
         const [feeDiscountStr, setFeeDiscountStr] = useState('2.8');
         const [isDayTradeTax, setIsDayTradeTax] = useState(true);
         const [minFeeStr, setMinFeeStr] = useState('20');
@@ -58,6 +59,7 @@
         const FEE_RATE = 0.001425; 
         const TAX_RATE_NORMAL = 0.003;
         const TAX_RATE_DAY = 0.0015;
+        const TAX_RATE_ETF = 0.001;
 
         // --- Helpers ---
         // 安全轉換數字
@@ -66,7 +68,9 @@
         const safeDiscount = parseFloat(feeDiscountStr) || 0;
         const safeMinFee = parseInt(minFeeStr, 10) || 0;
         
-        const currentTaxRate = isDayTradeTax ? TAX_RATE_DAY : TAX_RATE_NORMAL;
+        const currentTaxRate = assetType === 'etf'
+            ? TAX_RATE_ETF
+            : (isDayTradeTax ? TAX_RATE_DAY : TAX_RATE_NORMAL);
         const formatMoney = (val) => new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(val);
         const formatPercent = (val) => new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val) + '%';
 
@@ -81,7 +85,11 @@
             setter(val);
         };
 
-        const getTickSize = (price) => {
+        // 取得台股官方升降單位 (一般股 6 級距 / ETF 2 級距)
+        const getTickSize = (price, type = assetType) => {
+            if (type === 'etf') {
+                return price < 50 ? 0.01 : 0.05;
+            }
             if (price < 10) return 0.01;
             if (price < 50) return 0.05;
             if (price < 100) return 0.1;
@@ -90,31 +98,55 @@
             return 5;
         };
 
-        const addTicks = (price, ticks) => {
-            let currentP = price;
+        // 依照級距格式化價格小數位數 (例如 20.1 -> 20.10)
+        const formatPrice = (price) => {
+            if (typeof price !== 'number' || isNaN(price)) return '-';
+            const tick = getTickSize(price, assetType);
+            if (tick < 0.1) return price.toFixed(2);
+            if (tick < 1) return price.toFixed(1);
+            return price.toFixed(0);
+        };
+
+        // 以「分」(整數) 進行檔位加減，避免浮點數誤差與跨級距邊界錯誤
+        const addTicks = (price, ticks, type = assetType) => {
+            let pCents = Math.round(price * 100);
             const direction = ticks > 0 ? 1 : -1;
             let count = Math.abs(ticks);
             
             let safety = 0;
             while (count > 0 && safety < 1000) {
-                let step = getTickSize(currentP);
-                if (direction < 0) {
-                    if (currentP === 1000) step = 1;
-                    else if (currentP === 500) step = 0.5;
-                    else if (currentP === 100) step = 0.1;
-                    else if (currentP === 50) step = 0.05;
-                    else if (currentP === 10) step = 0.01;
+                let stepCents;
+                if (type === 'etf') {
+                    if (direction > 0) {
+                        stepCents = pCents < 5000 ? 1 : 5;
+                    } else {
+                        stepCents = pCents <= 5000 ? 1 : 5;
+                    }
+                } else {
+                    if (direction > 0) {
+                        if (pCents < 1000) stepCents = 1;
+                        else if (pCents < 5000) stepCents = 5;
+                        else if (pCents < 10000) stepCents = 10;
+                        else if (pCents < 50000) stepCents = 50;
+                        else if (pCents < 100000) stepCents = 100;
+                        else stepCents = 500;
+                    } else {
+                        if (pCents <= 1000) stepCents = 1;
+                        else if (pCents <= 5000) stepCents = 5;
+                        else if (pCents <= 10000) stepCents = 10;
+                        else if (pCents <= 50000) stepCents = 50;
+                        else if (pCents <= 100000) stepCents = 100;
+                        else stepCents = 500;
+                    }
                 }
                 
-                currentP += step * direction;
-                currentP = Math.round(currentP * 100) / 100; // 浮點數修正
-                
-                if (currentP <= 0) break;
+                pCents += stepCents * direction;
+                if (pCents <= 0) break;
                 
                 count--;
                 safety++;
             }
-            return currentP <= 0 ? 0 : currentP;
+            return pCents <= 0 ? 0 : pCents / 100;
         };
 
         const calculateResult = (entry, exit, vol, type) => {
@@ -123,8 +155,9 @@
             let buyPrice = type === 'long' ? entry : exit;
             let sellPrice = type === 'long' ? exit : entry;
             
-            const buyCost = Math.floor(buyPrice * vol);
-            const sellRevenue = Math.floor(sellPrice * vol);
+            // 使用 Math.round 避免浮點數誤差 (如 1.15 * 1000 = 1149.9999999999998)
+            const buyCost = Math.round(buyPrice * vol);
+            const sellRevenue = Math.round(sellPrice * vol);
 
             let bFee = Math.floor(buyCost * FEE_RATE * (safeDiscount / 10));
             if (bFee < safeMinFee) bFee = safeMinFee;
@@ -138,7 +171,7 @@
             const finalBuyPay = buyCost + bFee; 
             const netProfit = finalSellPocket - finalBuyPay;
             
-            const investmentCost = (entry * vol) + (type === 'long' ? bFee : (sFee + tax));
+            const investmentCost = Math.round(entry * vol) + (type === 'long' ? bFee : (sFee + tax));
             const roi = investmentCost > 0 ? (netProfit / investmentCost) * 100 : 0;
 
             return { netProfit, roi };
@@ -151,13 +184,13 @@
             for(let i=0; i<200; i++) {
                 const res = calculateResult(safeEntry, tempExit, safeSheets * 1000, tradeType);
                 if (res.netProfit >= 0) return tempExit;
-                tempExit = addTicks(tempExit, 1 * direction);
+                tempExit = addTicks(tempExit, 1 * direction, assetType);
             }
             return safeEntry;
         };
 
         // --- Memos ---
-        const breakEvenPrice = useMemo(() => calculateBreakEven(), [safeEntry, safeSheets, tradeType, safeDiscount, isDayTradeTax, safeMinFee]);
+        const breakEvenPrice = useMemo(() => calculateBreakEven(), [safeEntry, safeSheets, tradeType, assetType, safeDiscount, isDayTradeTax, safeMinFee]);
 
         const simulationTable = useMemo(() => {
             if (!safeEntry || !safeSheets) return [];
@@ -165,7 +198,7 @@
             const rows = [];
             for (let i = rangeTop; i >= rangeBottom; i--) {
                 const direction = tradeType === 'long' ? 1 : -1;
-                let p = addTicks(safeEntry, i * direction);
+                let p = addTicks(safeEntry, i * direction, assetType);
                 
                 if (p <= 0) continue;
                 
@@ -177,31 +210,8 @@
                 });
             }
             return rows;
-        }, [safeEntry, safeSheets, tradeType, safeDiscount, isDayTradeTax, safeMinFee, rangeTop, rangeBottom]);
-
-        const isLong = tradeType === 'long';
-        
-        const getProfitColor = (val) => {
-            if (val > 0) return 'text-red-600 font-bold';
-            if (val < 0) return 'text-green-600 font-bold';
-            return 'text-gray-400';
-        };
-
-        const getProfitBg = (val) => {
-            if (val > 0) return 'bg-red-50';
-            if (val < 0) return 'bg-green-50';
-            return 'bg-white';
-        };
-
-        // --- Handlers ---
-        const handleExpandTop = () => setRangeTop(prev => prev + 5);
-        const handleExpandBottom = () => setRangeBottom(prev => prev - 5);
-
-        return (
-            <div className="min-h-screen pb-20 max-w-lg mx-auto bg-gray-50 shadow-2xl overflow-hidden border-x border-gray-200">
-                
-                {/* Header Area */}
-                <div className="bg-white p-4 shadow-sm sticky top-0 z-10">
+        }, [safeEntry, safeSheets, tradeType, assetType, safeDiscount, isDayTradeTax, safeMinFee, rangeTop, rangeBottom]);
+// ... existing code ... -->
                     <div className="flex items-center justify-between mb-3">
                          <div className="flex items-center gap-2">
                             <div className={`p-1.5 rounded-lg ${isLong ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
@@ -209,18 +219,29 @@
                             </div>
                             <h1 className="font-bold text-gray-800 text-lg">當沖試算</h1>
                          </div>
-                         <div className="flex bg-gray-100 p-1 rounded-lg">
-                            <button onClick={() => setTradeType('long')} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${isLong ? 'bg-white text-red-600 shadow-sm' : 'text-gray-400'}`}>做多</button>
-                            <button onClick={() => setTradeType('short')} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${!isLong ? 'bg-white text-green-600 shadow-sm' : 'text-gray-400'}`}>做空</button>
-                        </div>
+                         <div className="flex items-center gap-2">
+                             <div className="flex bg-gray-100 p-1 rounded-lg">
+                                <button onClick={() => setAssetType('stock')} className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-all ${assetType === 'stock' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400'}`}>個股</button>
+                                <button onClick={() => setAssetType('etf')} className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-all ${assetType === 'etf' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400'}`}>ETF</button>
+                            </div>
+                             <div className="flex bg-gray-100 p-1 rounded-lg">
+                                <button onClick={() => setTradeType('long')} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${isLong ? 'bg-white text-red-600 shadow-sm' : 'text-gray-400'}`}>做多</button>
+                                <button onClick={() => setTradeType('short')} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${!isLong ? 'bg-white text-green-600 shadow-sm' : 'text-gray-400'}`}>做空</button>
+                            </div>
+                         </div>
                     </div>
 
                     {/* Quick Input Row */}
                     <div className="flex gap-3">
                         <div className="flex-1">
-                            <label className={`text-xs font-bold block mb-1 ${isLong ? 'text-red-700' : 'text-green-700'}`}>成本價</label>
+                            <div className="flex items-center justify-between mb-1">
+                                <label className={`text-xs font-bold ${isLong ? 'text-red-700' : 'text-green-700'}`}>成本價</label>
+                                {safeEntry > 0 && (
+                                    <span className="text-[10px] text-gray-400 font-mono">1檔={getTickSize(safeEntry, assetType)}</span>
+                                )}
+                            </div>
                             <input 
-                                type="number" step="0.1" inputMode="decimal"
+                                type="number" step="any" inputMode="decimal"
                                 value={entryPriceStr} 
                                 onChange={handleInputChange(setEntryPriceStr)} 
                                 placeholder="請輸入"
@@ -252,11 +273,17 @@
                         <input type="number" step="0.1" value={feeDiscountStr} onChange={handleInputChange(setFeeDiscountStr)} className="w-full bg-transparent text-center font-bold text-gray-700 outline-none" />
                     </div>
                     <div className="col-span-4 flex items-center justify-center gap-1 bg-gray-50 px-2 py-1 rounded">
-                        <input type="checkbox" checked={isDayTradeTax} onChange={() => setIsDayTradeTax(!isDayTradeTax)} id="tax" className="accent-blue-600" />
-                        <label htmlFor="tax">當沖稅</label>
+                        {assetType === 'etf' ? (
+                            <span className="text-blue-600 font-bold">ETF稅 0.1%</span>
+                        ) : (
+                            <>
+                                <input type="checkbox" checked={isDayTradeTax} onChange={() => setIsDayTradeTax(!isDayTradeTax)} id="tax" className="accent-blue-600" />
+                                <label htmlFor="tax">當沖稅</label>
+                            </>
+                        )}
                     </div>
                     <div className="col-span-4 flex flex-col justify-center items-center bg-yellow-50 text-yellow-800 rounded px-1 font-bold">
-                        <span>保本: {breakEvenPrice}</span>
+                        <span>保本: {typeof breakEvenPrice === 'number' ? formatPrice(breakEvenPrice) : breakEvenPrice}</span>
                     </div>
                 </div>
 
@@ -276,7 +303,7 @@
                             onClick={handleExpandTop}
                             className="flex-1 py-3 text-xs text-blue-500 font-medium bg-blue-50/50 hover:bg-blue-50 flex items-center justify-center gap-1 transition-colors"
                         >
-                            <Icons.MoreUp /> 查看更高價位 (+5)
+                            <Icons.MoreUp /> {isLong ? '查看更高價位 (+5)' : '查看更低價位 (獲利 +5)'}
                         </button>
                     </div>
 
@@ -292,7 +319,7 @@
                             {simulationTable.length === 0 ? (
                                 <div className="py-8 text-center text-gray-400 text-sm">請輸入有效數值以查看試算表</div>
                             ) : simulationTable.map((row) => (
-                                <div key={row.price} className={`grid grid-cols-4 py-2.5 px-4 items-center transition-colors ${row.price === safeEntry ? 'bg-blue-50 ring-1 ring-blue-100 z-10 relative' : getProfitBg(row.netProfit)} ${row.price === breakEvenPrice && row.price !== safeEntry ? 'bg-yellow-50' : ''}`}>
+                                <div key={row.diffTick} className={`grid grid-cols-4 py-2.5 px-4 items-center transition-colors ${row.diffTick === 0 ? 'bg-blue-50 ring-1 ring-blue-100 z-10 relative' : getProfitBg(row.netProfit)} ${row.price === breakEvenPrice && row.diffTick !== 0 ? 'bg-yellow-50' : ''}`}>
                                     
                                     {/* Column 1: Tick Label */}
                                     <div className="text-left">
@@ -305,6 +332,48 @@
                                         </span>
                                         {row.price === breakEvenPrice && row.diffTick !== 0 && <span className="ml-1 text-[9px] text-yellow-600 font-bold border border-yellow-200 px-1 rounded bg-white">保本</span>}
                                     </div>
+
+                                    {/* Column 2: Price */}
+                                    <div className={`text-right font-mono font-medium text-base ${isLong ? 'text-gray-800' : 'text-blue-900'}`}>
+                                        {formatPrice(row.price)}
+                                    </div>
+
+                                    {/* Column 3: Net Profit */}
+                                    <div className={`text-right font-mono text-base ${getProfitColor(row.netProfit)}`}>
+                                        {row.netProfit > 0 ? '+' : ''}{formatMoney(row.netProfit)}
+                                    </div>
+
+                                    {/* Column 4: ROI */}
+                                    <div className={`text-right font-mono text-xs ${getProfitColor(row.roi)}`}>
+                                        {formatPercent(row.roi)}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Expand Bottom Button Area */}
+                    <div className="flex border-t border-gray-100 mb-8">
+                        {rangeBottom < -5 && (
+                            <button 
+                                onClick={() => setRangeBottom(-5)}
+                                className="w-24 py-4 text-xs text-gray-400 font-medium bg-gray-50 hover:bg-gray-100 border-r border-gray-200 transition-colors"
+                            >
+                                收合
+                            </button>
+                        )}
+                        <button 
+                            onClick={handleExpandBottom}
+                            className="flex-1 py-4 text-xs text-blue-500 font-medium bg-blue-50/50 hover:bg-blue-50 flex items-center justify-center gap-1 transition-colors"
+                        >
+                            <Icons.MoreDown /> {isLong ? '查看更低價位 (+5)' : '查看更高價位 (虧損 +5)'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="text-center text-[10px] text-gray-300 py-4 bg-gray-50">
+                    當沖計算機 Pro v2.5 (完整級距與 ETF 支援)
+                </div>
 
                                     {/* Column 2: Price */}
                                     <div className={`text-right font-mono font-medium text-base ${isLong ? 'text-gray-800' : 'text-blue-900'}`}>
