@@ -42,10 +42,11 @@
 
     const App = () => {
         // --- State (統一使用字串管理輸入，避免小數點與開頭 0 問題) ---
+        const [tradeMode, setTradeMode] = useState('day'); // 'day' (當沖) or 'overnight' (隔日沖)
         const [tradeType, setTradeType] = useState('long'); // 'long' (做多) or 'short' (做空)
         const [assetType, setAssetType] = useState('stock'); // 'stock' (個股) or 'etf' (ETF)
         const [feeDiscountStr, setFeeDiscountStr] = useState('2.8');
-        const [isDayTradeTax, setIsDayTradeTax] = useState(true);
+        const [shortFeeRateStr, setShortFeeRateStr] = useState('0.08'); // 隔日沖融券手續費率 (%)
         const [minFeeStr, setMinFeeStr] = useState('20');
         
         const [entryPriceStr, setEntryPriceStr] = useState('100'); 
@@ -65,11 +66,15 @@
         const safeEntry = parseFloat(entryPriceStr) || 0;
         const safeSheets = parseInt(sheetsStr, 10) || 0;
         const safeDiscount = parseFloat(feeDiscountStr) || 0;
+        const safeShortFeeRate = parseFloat(shortFeeRateStr) || 0;
         const safeMinFee = parseInt(minFeeStr, 10) || 0;
         
+        const isOvernight = tradeMode === 'overnight';
+        const isOvernightShort = isOvernight && tradeType === 'short';
+
         const currentTaxRate = assetType === 'etf'
             ? TAX_RATE_ETF
-            : (isDayTradeTax ? TAX_RATE_DAY : TAX_RATE_NORMAL);
+            : (isOvernight ? TAX_RATE_NORMAL : TAX_RATE_DAY);
 
         const formatMoney = (val) => new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(val);
         const formatPercent = (val) => new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val) + '%';
@@ -157,19 +162,24 @@
             const buyCost = Math.round(buyPrice * vol);
             const sellRevenue = Math.round(sellPrice * vol);
 
-            let bFee = Math.floor(buyCost * FEE_RATE * (safeDiscount / 10));
+            let bFee = Math.floor(buyCost * FEE_RATE * (safeDiscount / 10) + 1e-9);
             if (bFee < safeMinFee) bFee = safeMinFee;
 
-            let sFee = Math.floor(sellRevenue * FEE_RATE * (safeDiscount / 10));
+            let sFee = Math.floor(sellRevenue * FEE_RATE * (safeDiscount / 10) + 1e-9);
             if (sFee < safeMinFee) sFee = safeMinFee;
 
-            const tax = Math.floor(sellRevenue * currentTaxRate);
+            const tax = Math.floor(sellRevenue * currentTaxRate + 1e-9);
+
+            // 隔日沖做空需加計融券手續費 (一般為賣出金額的 0.08%)
+            const shortFee = (tradeMode === 'overnight' && type === 'short')
+                ? Math.floor(sellRevenue * (safeShortFeeRate / 100) + 1e-9)
+                : 0;
             
-            const finalSellPocket = sellRevenue - sFee - tax; 
+            const finalSellPocket = sellRevenue - sFee - tax - shortFee; 
             const finalBuyPay = buyCost + bFee; 
             const netProfit = finalSellPocket - finalBuyPay;
             
-            const investmentCost = Math.round(entry * vol) + (type === 'long' ? bFee : (sFee + tax));
+            const investmentCost = Math.round(entry * vol) + (type === 'long' ? bFee : (sFee + tax + shortFee));
             const roi = investmentCost > 0 ? (netProfit / investmentCost) * 100 : 0;
 
             return { netProfit, roi };
@@ -191,7 +201,7 @@
         // --- Memos ---
         const breakEvenPrice = useMemo(
             () => calculateBreakEven(),
-            [safeEntry, safeSheets, tradeType, assetType, safeDiscount, isDayTradeTax, safeMinFee]
+            [safeEntry, safeSheets, tradeMode, tradeType, assetType, safeDiscount, safeShortFeeRate, safeMinFee]
         );
 
         const simulationTable = useMemo(() => {
@@ -212,10 +222,10 @@
                 });
             }
             return rows;
-        }, [safeEntry, safeSheets, tradeType, assetType, safeDiscount, isDayTradeTax, safeMinFee, rangeTop, rangeBottom]);
+        }, [safeEntry, safeSheets, tradeMode, tradeType, assetType, safeDiscount, safeShortFeeRate, safeMinFee, rangeTop, rangeBottom]);
 
         const isLong = tradeType === 'long';
-        
+
         const getProfitColor = (val) => {
             if (val > 0) return 'text-red-600 font-bold';
             if (val < 0) return 'text-green-600 font-bold';
@@ -242,7 +252,7 @@
                             <div className={`p-1.5 rounded-lg ${isLong ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
                                 {isLong ? <Icons.ArrowUp /> : <Icons.ArrowDown />}
                             </div>
-                            <h1 className="font-bold text-gray-800 text-lg">當沖試算</h1>
+                            <h1 className="font-bold text-gray-800 text-lg">{isOvernight ? '隔日沖試算' : '當沖試算'}</h1>
                         </div>
                         <div className="flex items-center gap-2">
                             <div className="flex bg-gray-100 p-1 rounded-lg">
@@ -291,24 +301,44 @@
                     </div>
                 </div>
 
-                {/* Settings & Info Bar */}
-                <div className="px-4 py-2 grid grid-cols-12 gap-2 text-xs text-gray-500 bg-white border-b border-gray-100">
-                    <div className="col-span-4 flex items-center gap-1 bg-gray-50 px-2 py-1 rounded">
-                        <span>折數</span>
-                        <input type="number" step="0.1" value={feeDiscountStr} onChange={handleInputChange(setFeeDiscountStr)} className="w-full bg-transparent text-center font-bold text-gray-700 outline-none" />
+                {/* Mode Switch & Settings Bar */}
+                <div className="px-4 py-2.5 space-y-2 text-xs text-gray-500 bg-white border-b border-gray-100">
+                    {/* 當沖 / 隔日沖 切換 */}
+                    <div className="grid grid-cols-2 gap-1.5 bg-gray-100 p-1 rounded-lg">
+                        <button
+                            onClick={() => setTradeMode('day')}
+                            className={`py-1.5 rounded-md font-bold transition-all ${!isOvernight ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                        >
+                            當沖 <span className="font-normal opacity-75">({assetType === 'etf' ? '稅0.1%' : '稅0.15%'})</span>
+                        </button>
+                        <button
+                            onClick={() => setTradeMode('overnight')}
+                            className={`py-1.5 rounded-md font-bold transition-all ${isOvernight ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                        >
+                            隔日沖 <span className="font-normal opacity-75">({assetType === 'etf' ? '稅0.1%' : '稅0.3%'})</span>
+                        </button>
                     </div>
-                    <div className="col-span-4 flex items-center justify-center gap-1 bg-gray-50 px-2 py-1 rounded">
-                        {assetType === 'etf' ? (
-                            <span className="text-blue-600 font-bold">ETF稅 0.1%</span>
-                        ) : (
-                            <div className="flex items-center gap-1">
-                                <input type="checkbox" checked={isDayTradeTax} onChange={() => setIsDayTradeTax(!isDayTradeTax)} id="tax" className="accent-blue-600" />
-                                <label htmlFor="tax">當沖稅</label>
-                            </div>
-                        )}
-                    </div>
-                    <div className="col-span-4 flex flex-col justify-center items-center bg-yellow-50 text-yellow-800 rounded px-1 font-bold">
-                        <span>保本: {typeof breakEvenPrice === 'number' ? formatPrice(breakEvenPrice) : breakEvenPrice}</span>
+
+                    <div className="grid grid-cols-12 gap-2">
+                        <div className="col-span-4 flex items-center gap-1 bg-gray-50 px-2 py-1.5 rounded">
+                            <span>折數</span>
+                            <input type="number" step="0.1" value={feeDiscountStr} onChange={handleInputChange(setFeeDiscountStr)} className="w-full bg-transparent text-center font-bold text-gray-700 outline-none" />
+                        </div>
+                        <div className="col-span-4 flex items-center justify-center gap-1 bg-gray-50 px-2 py-1.5 rounded">
+                            {isOvernightShort ? (
+                                <div className="flex items-center gap-1 w-full">
+                                    <span className="whitespace-nowrap text-indigo-600 font-bold">券費%</span>
+                                    <input type="number" step="0.01" value={shortFeeRateStr} onChange={handleInputChange(setShortFeeRateStr)} className="w-full bg-transparent text-center font-bold text-indigo-700 outline-none" />
+                                </div>
+                            ) : (
+                                <span className="font-bold text-gray-600">
+                                    {assetType === 'etf' ? 'ETF稅 0.1%' : (isOvernight ? '一般稅 0.3%' : '當沖稅 0.15%')}
+                                </span>
+                            )}
+                        </div>
+                        <div className="col-span-4 flex flex-col justify-center items-center bg-yellow-50 text-yellow-800 rounded px-1 py-1.5 font-bold">
+                            <span>保本: {typeof breakEvenPrice === 'number' ? formatPrice(breakEvenPrice) : breakEvenPrice}</span>
+                        </div>
                     </div>
                 </div>
 
@@ -397,7 +427,7 @@
                 </div>
 
                 <div className="text-center text-[10px] text-gray-300 py-4 bg-gray-50">
-                    當沖計算機 Pro v2.5.1 (完整級距與 ETF 支援)
+                    當沖／隔日沖計算機 Pro v2.6 (支援隔日沖稅率與融券費)
                 </div>
 
             </div>
